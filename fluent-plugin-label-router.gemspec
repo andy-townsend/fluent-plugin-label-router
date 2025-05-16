@@ -3,13 +3,13 @@ $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 
 Gem::Specification.new do |spec|
   spec.name    = "fluent-plugin-label-router"
-  spec.version = "0.5.0"
+  spec.version = "0.6.0"
   spec.authors = ["Banzai Cloud"]
   spec.email   = ["info@banzaicloud.com"]
 
   spec.summary       = %q{Routing records based on Kubernetes labels.}
   spec.description   = %q{Label-Router helps routing log messages based on their labels and namespace tag in a Kubernetes environment.}
-  spec.homepage      = "https://github.com/banzaicloud/fluent-plugin-label-router"
+  spec.homepage      = "https://github.com/andy-townsend/fluent-plugin-label-router"
   spec.license       = "Apache-2.0"
 
   test_files, files  = `git ls-files -z`.split("\x0").partition do |f|

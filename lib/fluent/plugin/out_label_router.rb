@@ -52,6 +52,8 @@ module Fluent
         config_section :match, param_name: :matches, multi: true do
           desc "Label definition to match record. Example: app:nginx. You can specify more values as comma separated list: key1:value1,key2:value2"
           config_param :labels, :hash, :default => {}
+          desc "Field definition to match record. Example: log-target:s3. Matches any field in the log record."
+          config_param :fields, :hash, :default => {}
           desc "List of namespace definition to filter the record. Ignored if left empty."
           config_param :namespaces, :array, :default => [], value_type: :string
           desc "List of regex for namespace definition to filter the record. Ignored if left empty."
@@ -81,6 +83,13 @@ module Fluent
               else
                 @counter = registry.counter(:fluentd_router_records_total, docstring: "Total number of events routed for the flow", labels: [:flow, :id])
               end
+          end
+          # Store field paths that need accessors
+          @field_paths = {}
+          @matches.each do |match|
+            match.fields.each do |field_path, _|
+              @field_paths[field_path] = true
+            end
           end
         end
 
@@ -128,6 +137,14 @@ module Fluent
             return false
           end
 
+          # Check custom fields if any
+          if !match.fields.empty?
+            match.fields.each do |field_path, expected_value|
+              field_value = metadata[:field_values][field_path]
+              return false unless field_value.to_s == expected_value.to_s
+            end
+          end
+
           match_labels(metadata[:labels], match.labels)
         end
 
@@ -155,6 +172,42 @@ module Fluent
         end
       end
 
+      def configure(conf)
+        super
+        @registry = (::Prometheus::Client.registry if @metrics)
+        @route_map = Hash.new { |h, k| h[k] = Set.new }
+        @rwlock = Concurrent::ReadWriteLock.new
+        @routers = []
+        @default_router = nil
+
+        # Collect all field paths that need accessors
+        @field_accessors = {}
+
+        @routes.each do |rule|
+          route_router = event_emitter_router(rule['@label'])
+          router = Route.new(rule, route_router, @registry)
+          @routers << router
+
+          # Create accessors for all field paths
+          router.instance_variable_get(:@field_paths).keys.each do |field_path|
+            @field_accessors[field_path] ||= record_accessor_create(field_path)
+          end
+        end
+
+        if @default_route != '' or @default_tag != ''
+          default_rule = { 'matches' => nil, 'tag' => @default_tag, '@label' => @default_route, 'metrics_labels' => @default_metrics_labels }
+          @default_router = Route.new(default_rule, event_emitter_router(@default_route), @registry)
+        end
+
+        @access_to_labels = record_accessor_create("$.kubernetes.labels")
+        @access_to_namespace_labels = record_accessor_create("$.kubernetes_namespace.labels")
+        @access_to_namespace = record_accessor_create("$.kubernetes.namespace_name")
+        @access_to_host = record_accessor_create("$.kubernetes.host")
+        @access_to_container_name = record_accessor_create("$.kubernetes.container_name")
+
+        @batch = @emit_mode == :batch
+      end
+
       def process(tag, es)
         if @sticky_tags
           @rwlock.with_read_lock {
@@ -169,11 +222,23 @@ module Fluent
         end
         event_stream = Hash.new {|h, k| h[k] = Fluent::MultiEventStream.new }
         es.each do |time, record|
+          # Extract field values for custom field matching
+          field_values = {}
+          @field_accessors.each do |field_path, accessor|
+            begin
+              field_values[field_path] = accessor.call(record)
+            rescue => e
+              log.debug "Failed to access field #{field_path}: #{e}"
+              field_values[field_path] = nil
+            end
+          end
+
           input_metadata = { labels: @access_to_labels.call(record).to_h,
                              namespace: @access_to_namespace.call(record).to_s,
                              namespace_labels: @access_to_namespace_labels.call(record).to_h,
                              container: @access_to_container_name.call(record).to_s,
-                             host: @access_to_host.call(record).to_s}
+                             host: @access_to_host.call(record).to_s,
+                             field_values: field_values }
           orphan_record = true
           @routers.each do |r|
             if r.match?(input_metadata)
@@ -208,32 +273,6 @@ module Fluent
             r.emit_es(tag, es.dup)
           end
         end
-      end
-
-      def configure(conf)
-        super
-        @registry = (::Prometheus::Client.registry if @metrics)
-        @route_map = Hash.new { |h, k| h[k] = Set.new }
-        @rwlock = Concurrent::ReadWriteLock.new
-        @routers = []
-        @default_router = nil
-        @routes.each do |rule|
-          route_router = event_emitter_router(rule['@label'])
-          @routers << Route.new(rule, route_router, @registry)
-        end
-
-        if @default_route != '' or @default_tag != ''
-          default_rule = { 'matches' => nil, 'tag' => @default_tag, '@label' => @default_route, 'metrics_labels' => @default_metrics_labels }
-          @default_router = Route.new(default_rule, event_emitter_router(@default_route), @registry)
-        end
-
-        @access_to_labels = record_accessor_create("$.kubernetes.labels")
-        @access_to_namespace_labels = record_accessor_create("$.kubernetes_namespace.labels")
-        @access_to_namespace = record_accessor_create("$.kubernetes.namespace_name")
-        @access_to_host = record_accessor_create("$.kubernetes.host")
-        @access_to_container_name = record_accessor_create("$.kubernetes.container_name")
-
-        @batch = @emit_mode == :batch
       end
     end
   end

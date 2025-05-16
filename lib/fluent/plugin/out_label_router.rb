@@ -72,7 +72,7 @@ module Fluent
       class Route
         def initialize(rule, router, registry)
           @router = router
-          @matches = rule['matches']
+          @matches = rule['matches'] || []
           @tag = rule['tag'].to_s
           @label = rule['@label']
           @metrics_labels = (rule['metrics_labels'].map { |k, v| [k.to_sym, v] }.to_h if rule['metrics_labels'])
@@ -86,9 +86,11 @@ module Fluent
           end
           # Store field paths that need accessors
           @field_paths = {}
-          @matches.each do |match|
-            match.fields.each do |field_path, _|
-              @field_paths[field_path] = true
+          if @matches && !@matches.empty?
+            @matches.each do |match|
+              match.fields.each do |field_path, _|
+                @field_paths[field_path] = true
+              end
             end
           end
         end

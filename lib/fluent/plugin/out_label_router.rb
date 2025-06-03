@@ -241,7 +241,7 @@ module Fluent
         end
       end
 
-            def configure(conf)
+      def configure(conf)
         super
         @registry = (::Prometheus::Client.registry if @metrics)
         @route_map = Hash.new { |h, k| h[k] = Set.new }
